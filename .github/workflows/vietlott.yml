@@ -1,0 +1,77 @@
+name: Vietlott Simulator Bot
+
+on:
+  schedule:
+    # Gửi số dự đoán: 8:00 SA mỗi ngày (ICT = UTC+7 → 01:00 UTC)
+    - cron: "0 1 * * *"
+    # Cập nhật kết quả: 9:00 SA mỗi ngày (02:00 UTC) — sau khi Vietlott công bố
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Chạy chế độ nào?"
+        required: true
+        default: "predict"
+        type: choice
+        options:
+          - predict
+          - update_score
+
+permissions:
+  contents: write
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests pytz
+
+      - name: Xác định mode (schedule hay manual)
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+          else
+            # 01:00 UTC = gửi dự đoán, 02:00 UTC = cập nhật điểm
+            HOUR=$(date -u +"%H")
+            if [ "$HOUR" = "01" ]; then
+              echo "mode=predict" >> $GITHUB_OUTPUT
+            else
+              echo "mode=update_score" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Pull tracking data mới nhất
+        run: |
+          git config user.name "Vietlott Bot"
+          git config user.email "bot@vietlott-sim.local"
+          git pull --rebase origin main || true
+
+      - name: Chạy dự đoán (8:00 SA)
+        if: steps.mode.outputs.mode == 'predict'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python vietlott_bot.py
+
+      - name: Chạy cập nhật điểm (9:00 SA)
+        if: steps.mode.outputs.mode == 'update_score'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python update_score.py
+
+      - name: Lưu tracking data lên repo
+        run: |
+          git add tracking.json last_picks.json 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "chore: update tracking $(date -u +'%Y-%m-%d %H:%M')"
+          git push origin main || true
